@@ -8,7 +8,7 @@ AUDIO_DIR = "voice_clips"
 VOTES_FILE = "votes_alfa.csv"
 MANUAL_ELO_FILE = "manual_elo.csv"
 INITIAL_RATING = 1500
-ADMIN_PASSWORD = "admin"
+ADMIN_PASSWORD = "Hexamiodon"
 GOAL_VOTES = 1500 
 
 st.set_page_config(page_title="ALFA Vibe Ranker Pro", layout="wide")
@@ -165,4 +165,5 @@ elif page == "Panel Administratora":
 
         st.sidebar.download_button("📥 Pobierz Wyniki", ranking_df.to_csv(index=False), "wyniki.csv")
     elif pwd != "":
+
         st.error("Błędne hasło!")
