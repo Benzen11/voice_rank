@@ -57,26 +57,58 @@ def calculate_elo(df_votes, files, dynamic_k=True):
     return ratings
 
 def pick_new_pair_for_user(user_name):
+    available_files = st.session_state.files
+    if len(available_files) < 2: 
+        return None, 0.0
+
+    # 1. Sprawdzamy, na co ten konkretny użytkownik już głosował
     user_voted_pairs = set()
+    global_counts = {f: 0 for f in available_files} # Licznik głosów dla każdego pliku ogółem
+    
     if os.path.exists(VOTES_FILE):
         df = pd.read_csv(VOTES_FILE)
-        if 'user' in df.columns:
-            user_votes = df[df['user'] == user_name]
-            for _, row in user_votes.iterrows():
+        # Zliczamy głosy ogólne dla priorytetyzacji
+        for _, row in df.iterrows():
+            if row['file_a'] in global_counts: global_counts[row['file_a']] += 1
+            if row['file_b'] in global_counts: global_counts[row['file_b']] += 1
+            
+            # Zapamiętujemy pary użytkownika
+            if 'user' in df.columns and row['user'] == user_name:
                 user_voted_pairs.add(tuple(sorted([row['file_a'], row['file_b']])))
 
-    available_files = st.session_state.files
-    if len(available_files) < 2: return None, 0.0
+    # 2. Szukamy plików, które mają najmniej głosów w całym systemie
+    # Sortujemy pliki od tych z najmniejszą liczbą głosów
+    sorted_by_scarcity = sorted(available_files, key=lambda x: global_counts[x])
     
-    all_possible_pairs = [(available_files[i], available_files[j]) 
-                          for i in range(len(available_files)) 
-                          for j in range(i + 1, len(available_files))]
+    # Wybieramy pulę "kandydatów" (np. 15 najmniej ocenianych plików)
+    # Zwiększenie tej puli sprawia, że pary są bardziej różnorodne
+    pool_size = min(15, len(available_files))
+    candidates = sorted_by_scarcity[:pool_size]
+
+    # 3. Generujemy możliwe pary z tych kandydatów, których użytkownik jeszcze nie widział
+    valid_pairs = []
+    for i in range(len(candidates)):
+        for j in range(i + 1, len(candidates)):
+            p = tuple(sorted([candidates[i], candidates[j]]))
+            if p not in user_voted_pairs:
+                valid_pairs.append(p)
+
+    # 4. Jeśli w małej puli nie ma nic nowego, szukamy w całym zbiorze
+    if not valid_pairs:
+        all_possible_pairs = [(available_files[i], available_files[j]) 
+                              for i in range(len(available_files)) 
+                              for j in range(i + 1, len(available_files))]
+        valid_pairs = [p for p in all_possible_pairs if tuple(sorted(p)) not in user_voted_pairs]
+
+    if not valid_pairs: 
+        return None, 1.0
     
-    remaining_pairs = [p for p in all_possible_pairs if tuple(sorted(p)) not in user_voted_pairs]
-    if not remaining_pairs: return None, 1.0
+    # 5. Obliczamy postęp (na podstawie wszystkich możliwych kombinacji)
+    total_possible_combinations = (len(available_files) * (len(available_files) - 1)) / 2
+    progress = 1.0 - (len(valid_pairs) / total_possible_combinations)
     
-    progress = 1.0 - (len(remaining_pairs) / len(all_possible_pairs))
-    return random.choice(remaining_pairs), progress
+    # Losujemy jedną parę z dostępnych "świeżych" par
+    return random.choice(valid_pairs), progress
 
 # --- INICJALIZACJA PLIKÓW ---
 if 'files' not in st.session_state:
