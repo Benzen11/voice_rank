@@ -111,7 +111,7 @@ def pick_new_pair_for_user(user_name):
 def save_vote(user, f_a, f_b, winner):
     """Zapisuje głos z dokładnym czasem wystąpienia."""
     new_data = {
-        'timestamp': [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+        #'timestamp': [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
         'user': [user],
         'file_a': [f_a],
         'file_b': [f_b],
@@ -251,3 +251,4 @@ elif page == "Panel Administratora":
 
     elif pwd != "":
         st.error("Błędne hasło!")
+
