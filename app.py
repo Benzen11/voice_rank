@@ -251,4 +251,3 @@ elif page == "Panel Administratora":
 
     elif pwd != "":
         st.error("Błędne hasło!")
-
