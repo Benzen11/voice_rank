@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import random
 import pandas as pd
+from datetime import datetime
 
 # --- KONFIGURACJA ---
 AUDIO_DIR = "voice_clips"
@@ -18,16 +19,23 @@ if not os.path.exists(AUDIO_DIR):
     os.makedirs(AUDIO_DIR)
 
 # --- FUNKCJE LOGICZNE ---
+
 def calculate_elo(df_votes, files, dynamic_k=True):
-    # Inicjalizacja ocen dla wszystkich plików (tych na dysku)
+    """Przelicza ranking od zera, symulując historię głosowań krok po kroku."""
     ratings = {f: INITIAL_RATING for f in files}
     counts = {f: 0 for f in files}
     
     if not df_votes.empty:
+        # KLUCZOWE: Sortujemy po czasie, aby symulacja była identyczna z rzeczywistością
+        if 'timestamp' in df_votes.columns:
+            df_votes = df_votes.sort_values('timestamp')
+        
         for _, row in df_votes.iterrows():
             f_a, f_b = row['file_a'], row['file_b']
+            
             # Obliczamy tylko jeśli pliki nadal istnieją w AUDIO_DIR
             if f_a in ratings and f_b in ratings:
+                # Dynamiczny współczynnik K
                 if dynamic_k:
                     k_a = 60 if counts[f_a] < 10 else (16 if counts[f_a] > 30 else 32)
                     k_b = 60 if counts[f_b] < 10 else (16 if counts[f_b] > 30 else 32)
@@ -35,17 +43,21 @@ def calculate_elo(df_votes, files, dynamic_k=True):
                     k_a = k_b = 32
 
                 r_a, r_b = ratings[f_a], ratings[f_b]
+                
+                # Formuła prawdopodobieństwa wygranej (Elo)
                 e_a = 1 / (1 + 10 ** ((r_b - r_a) / 400))
                 e_b = 1 / (1 + 10 ** ((r_a - r_b) / 400))
                 
+                # Wynik punktowy
                 s_a, s_b = (1, 0) if row['winner'] == 'A' else (0, 1) if row['winner'] == 'B' else (0.5, 0.5)
                 
+                # Aktualizacja ocen
                 ratings[f_a] += k_a * (s_a - e_a)
                 ratings[f_b] += k_b * (s_b - e_b)
                 counts[f_a] += 1
                 counts[f_b] += 1
     
-    # Nakładanie ręcznych korekt Elo
+    # Nakładanie ręcznych korekt Elo z pliku zewnętrznego
     if os.path.exists(MANUAL_ELO_FILE):
         try:
             manual_df = pd.read_csv(MANUAL_ELO_FILE)
@@ -61,31 +73,21 @@ def pick_new_pair_for_user(user_name):
     if len(available_files) < 2: 
         return None, 0.0
 
-    # 1. Sprawdzamy, na co ten konkretny użytkownik już głosował
     user_voted_pairs = set()
-    global_counts = {f: 0 for f in available_files} # Licznik głosów dla każdego pliku ogółem
+    global_counts = {f: 0 for f in available_files}
     
     if os.path.exists(VOTES_FILE):
         df = pd.read_csv(VOTES_FILE)
-        # Zliczamy głosy ogólne dla priorytetyzacji
         for _, row in df.iterrows():
             if row['file_a'] in global_counts: global_counts[row['file_a']] += 1
             if row['file_b'] in global_counts: global_counts[row['file_b']] += 1
-            
-            # Zapamiętujemy pary użytkownika
             if 'user' in df.columns and row['user'] == user_name:
                 user_voted_pairs.add(tuple(sorted([row['file_a'], row['file_b']])))
 
-    # 2. Szukamy plików, które mają najmniej głosów w całym systemie
-    # Sortujemy pliki od tych z najmniejszą liczbą głosów
     sorted_by_scarcity = sorted(available_files, key=lambda x: global_counts[x])
-    
-    # Wybieramy pulę "kandydatów" (np. 15 najmniej ocenianych plików)
-    # Zwiększenie tej puli sprawia, że pary są bardziej różnorodne
     pool_size = min(15, len(available_files))
     candidates = sorted_by_scarcity[:pool_size]
 
-    # 3. Generujemy możliwe pary z tych kandydatów, których użytkownik jeszcze nie widział
     valid_pairs = []
     for i in range(len(candidates)):
         for j in range(i + 1, len(candidates)):
@@ -93,7 +95,6 @@ def pick_new_pair_for_user(user_name):
             if p not in user_voted_pairs:
                 valid_pairs.append(p)
 
-    # 4. Jeśli w małej puli nie ma nic nowego, szukamy w całym zbiorze
     if not valid_pairs:
         all_possible_pairs = [(available_files[i], available_files[j]) 
                               for i in range(len(available_files)) 
@@ -103,12 +104,21 @@ def pick_new_pair_for_user(user_name):
     if not valid_pairs: 
         return None, 1.0
     
-    # 5. Obliczamy postęp (na podstawie wszystkich możliwych kombinacji)
     total_possible_combinations = (len(available_files) * (len(available_files) - 1)) / 2
     progress = 1.0 - (len(valid_pairs) / total_possible_combinations)
-    
-    # Losujemy jedną parę z dostępnych "świeżych" par
     return random.choice(valid_pairs), progress
+
+def save_vote(user, f_a, f_b, winner):
+    """Zapisuje głos z dokładnym czasem wystąpienia."""
+    new_data = {
+        'timestamp': [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+        'user': [user],
+        'file_a': [f_a],
+        'file_b': [f_b],
+        'winner': [winner]
+    }
+    df = pd.DataFrame(new_data)
+    df.to_csv(VOTES_FILE, mode='a', header=not os.path.exists(VOTES_FILE), index=False)
 
 # --- INICJALIZACJA PLIKÓW ---
 if 'files' not in st.session_state:
@@ -122,7 +132,7 @@ if page == "Głosowanie":
     if 'user_name' not in st.session_state:
         _, col_mid, _ = st.columns([1, 1.5, 1])
         with col_mid:
-            st.title("🎙️ Badanie Alfa Vibe")
+            st.title("🎧 Badanie Alfa Vibe")
             with st.form("login_form"):
                 u_input = st.text_input("Nick:", placeholder="Twoje imię")
                 if st.form_submit_button("Zaloguj", use_container_width=True) and u_input.strip():
@@ -142,59 +152,54 @@ if page == "Głosowanie":
         with c1:
             st.audio(os.path.join(AUDIO_DIR, f_a))
             if st.button("Wybierz A", use_container_width=True):
-                pd.DataFrame([[st.session_state.user_name, f_a, f_b, 'A']], columns=['user','file_a','file_b','winner']).to_csv(VOTES_FILE, mode='a', header=not os.path.exists(VOTES_FILE), index=False)
+                save_vote(st.session_state.user_name, f_a, f_b, 'A')
                 st.rerun()
         with c2:
             st.audio(os.path.join(AUDIO_DIR, f_b))
             if st.button("Wybierz B", use_container_width=True):
-                pd.DataFrame([[st.session_state.user_name, f_a, f_b, 'B']], columns=['user','file_a','file_b','winner']).to_csv(VOTES_FILE, mode='a', header=not os.path.exists(VOTES_FILE), index=False)
+                save_vote(st.session_state.user_name, f_a, f_b, 'B')
                 st.rerun()
         
         st.divider()
         if st.button("⚖️ Remis / Nie potrafię ocenić", use_container_width=True):
-            pd.DataFrame([[st.session_state.user_name, f_a, f_b, 'EQUAL']], columns=['user','file_a','file_b','winner']).to_csv(VOTES_FILE, mode='a', header=not os.path.exists(VOTES_FILE), index=False)
+            save_vote(st.session_state.user_name, f_a, f_b, 'EQUAL')
             st.rerun()
 
 # --- STRONA 2: PANEL ADMINISTRATORA ---
 elif page == "Panel Administratora":
-    st.title("🔒 Panel Administratora")
+    st.title("🔐 Panel Administratora")
     pwd = st.sidebar.text_input("Hasło:", type="password")
     
     if pwd == ADMIN_PASSWORD:
-        # Odczyt głosów
         df_votes = pd.read_csv(VOTES_FILE) if os.path.exists(VOTES_FILE) else pd.DataFrame()
         
-        # Pasek postępu projektu
         num_votes = len(df_votes)
         st.subheader(f"Statystyki: {num_votes} / {GOAL_VOTES} głosów")
         st.progress(min(num_votes / GOAL_VOTES, 1.0))
 
-        # --- NOWA SEKCJA: BACKUP I PRZYWRACANIE ---
-        with st.expander("📦 Zarządzanie Bazą Danych (Backup/Przywracanie)"):
-            st.warning("Uwaga: Wgranie pliku backupu zastąpi obecne głosy na serwerze.")
-            uploaded_backup = st.file_uploader("Wgraj plik votes_alfa.csv pobrany wcześniej", type="csv")
+        with st.expander("📂 Zarządzanie Bazą Danych (Backup/Przywracanie)"):
+            st.warning("Wgranie pliku zastąpi obecne głosy. Jeśli plik nie ma kolumny 'timestamp', kolejność wierszy zostanie uznana za chronologiczną.")
+            uploaded_backup = st.file_uploader("Wgraj plik votes_alfa.csv", type="csv")
             
             if uploaded_backup is not None:
-                if st.button("♻️ Przywróć bazę z tego pliku"):
+                if st.button("♻️ Przywróć i przelicz ranking"):
                     try:
                         backup_df = pd.read_csv(uploaded_backup)
-                        # Sprawdzenie czy kolumny się zgadzają
-                        required_cols = {'user', 'file_a', 'file_b', 'winner'}
+                        required_cols = {'file_a', 'file_b', 'winner'} # user i timestamp są opcjonalne dla starych baz
                         if required_cols.issubset(set(backup_df.columns)):
                             backup_df.to_csv(VOTES_FILE, index=False)
-                            st.success("Baza została pomyślnie przywrócona!")
+                            st.success("Baza pomyślnie wgrana. Ranking zostanie przeliczony.")
                             st.rerun()
                         else:
-                            st.error("Błąd: Plik ma nieprawidłowe kolumny!")
+                            st.error("Błąd: Plik nie zawiera wymaganych kolumn (file_a, file_b, winner)!")
                     except Exception as e:
-                        st.error(f"Wystąpił błąd podczas wczytywania: {e}")
+                        st.error(f"Błąd: {e}")
 
-        # Konfiguracja Elo
         st.sidebar.divider()
-        use_dyn_k = st.sidebar.checkbox("🚀 Dynamiczne K", value=True)
-        edit_mode = st.sidebar.toggle("🛠️ Tryb Korekty Elo")
+        use_dyn_k = st.sidebar.checkbox("📉 Dynamiczne K", value=True)
+        edit_mode = st.sidebar.toggle("✏️ Tryb Korekty Elo")
         
-        # Obliczanie rankingu
+        # Obliczanie rankingu - tutaj dzieje się "magia" symulacji
         current_ratings = calculate_elo(df_votes, st.session_state.files, dynamic_k=use_dyn_k)
         
         if current_ratings:
@@ -203,9 +208,8 @@ elif page == "Panel Administratora":
         else:
             ranking_df = pd.DataFrame(columns=["Plik", "Elo"])
 
-        # Wyświetlanie tabeli
         if edit_mode:
-            st.info("Możesz ręcznie zmienić wartości Elo w tabeli poniżej.")
+            st.info("Korekta ręczna nadpisuje wyniki symulacji Elo.")
             edited = st.data_editor(ranking_df, use_container_width=True)
             if st.button("Zapisz zmiany w Elo"):
                 edited.to_csv(MANUAL_ELO_FILE, index=False)
@@ -214,9 +218,8 @@ elif page == "Panel Administratora":
         else:
             st.dataframe(ranking_df, use_container_width=True, height=400)
 
-        # Zarządzanie nagraniami
         st.divider()
-        st.subheader("📋 Podgląd i Usuwanie Nagrań")
+        st.subheader("🎥 Podgląd i Usuwanie Nagrań")
         
         for i, row in ranking_df.iterrows():
             c_pos, c_aud, c_txt, c_del = st.columns([0.5, 3, 4, 1])
@@ -227,13 +230,11 @@ elif page == "Panel Administratora":
             if c_del.button("🗑️", key=f"del_{row['Plik']}"):
                 try:
                     os.remove(os.path.join(AUDIO_DIR, row['Plik']))
-                    st.toast(f"Usunięto plik: {row['Plik']}")
                     st.session_state.files = [f for f in os.listdir(AUDIO_DIR) if f.endswith(('.mp3', '.wav'))]
                     st.rerun()
                 except Exception as e:
                     st.error(f"Błąd: {e}")
 
-        # Download Buttons w sidebarze
         st.sidebar.subheader("Pobieranie danych")
         st.sidebar.download_button(
             "📥 Pobierz Głosy (CSV)", 
